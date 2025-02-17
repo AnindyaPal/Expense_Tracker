@@ -27,19 +27,26 @@ class SmsProcessor @Inject constructor(    private val settingsDao: SettingsDao
 
         // Case-sensitive exact merchant matches
         private val merchantCategories = listOf(
-            MerchantCategory("SWIGGY LIMITED", CATEGORY_GROCERY),    // Instamart
+            // Food delivery
             MerchantCategory("Swiggy Limited", CATEGORY_FOOD),      // Food delivery
             MerchantCategory("BUNDL TECHNOLOGIES", CATEGORY_FOOD),
             MerchantCategory("Bundl Technologi", CATEGORY_FOOD),
             MerchantCategory("ZOMATO", CATEGORY_FOOD),
+            // Groceries
             MerchantCategory("BLINKIT", CATEGORY_GROCERY),
             MerchantCategory("ZEPTO", CATEGORY_GROCERY),
             MerchantCategory("BIGBASKET", CATEGORY_GROCERY),
+            MerchantCategory("SWIGGY LIMITED", CATEGORY_GROCERY),    // Instamart
+            // Investment platforms with variations
+            MerchantCategory("ANGEL LTD NSE", CATEGORY_INVESTMENT),
+            MerchantCategory("ANGEL ONE", CATEGORY_INVESTMENT),
+            MerchantCategory("ANGEL One Limite", CATEGORY_INVESTMENT),
+            MerchantCategory("ANGEL BROKING", CATEGORY_INVESTMENT),
+            MerchantCategory("Zerodha Broking", CATEGORY_INVESTMENT),
+            MerchantCategory("ZERODHA", CATEGORY_INVESTMENT),
             MerchantCategory("GROWW", CATEGORY_INVESTMENT),
             MerchantCategory("Groww Payments", CATEGORY_INVESTMENT),
             MerchantCategory("GROWW INVESTMENT", CATEGORY_INVESTMENT),
-            MerchantCategory("Zerodha Broking", CATEGORY_INVESTMENT),
-            MerchantCategory("Angel", CATEGORY_INVESTMENT)
         )
 
         private val categoryKeywords = mapOf(
@@ -53,7 +60,8 @@ class SmsProcessor @Inject constructor(    private val settingsDao: SettingsDao
                 "airtel", "jio", "vi ", "vodafone", "recharge"
             ),
             CATEGORY_INVESTMENT to listOf(
-                "mutual fund", "stocks", "investment", "trading", "groww" , "Zerodah" , "Angel One"
+                "mutual fund", "stocks", "investment", "trading", "groww",
+                "angel", "zerodha", "nse", "bse", "securities", "broking"
             )
         )
     }
@@ -71,9 +79,10 @@ class SmsProcessor @Inject constructor(    private val settingsDao: SettingsDao
         val processedRefNos = mutableSetOf<String>()
         val expenses = mutableListOf<Expense>()
 
+        val smsUri = getAccessibleSmsUri(context) ?: return emptyList()
+
         val cursor = context.contentResolver.query(
-            //Uri.parse("content://sms"), // for pixel and samsung devices
-            Uri.parse("content://sms/inbox"),
+            smsUri,
             arrayOf("body", "date"),
             "date > ?",  // Only get messages after last sync
             arrayOf(lastSync.toString()),
@@ -161,5 +170,17 @@ class SmsProcessor @Inject constructor(    private val settingsDao: SettingsDao
         }
 
         return CATEGORY_MISC
+    }
+
+    private fun getAccessibleSmsUri(context: Context): Uri? {
+        return try {
+            val uri = Uri.parse("content://sms/inbox")
+            context.contentResolver.query(uri, null, null, null, null)?.use { cursor ->
+                if (cursor.count >= 0) return uri
+            }
+            Uri.parse("content://sms")
+        } catch (e: Exception) {
+            Uri.parse("content://sms")
+        }
     }
 }

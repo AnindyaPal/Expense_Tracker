@@ -27,6 +27,7 @@ import androidx.compose.runtime.setValue
 import androidx.core.content.ContextCompat
 import com.example.expensetracker.ui.home.HomeScreen
 import com.example.expensetracker.ui.home.HomeViewModel
+import com.example.expensetracker.ui.home.MutualFundScreen
 import com.example.expensetracker.ui.theme.ExpenseTrackerTheme
 import dagger.hilt.android.AndroidEntryPoint
 
@@ -39,7 +40,6 @@ class MainActivity : ComponentActivity() {
         ActivityResultContracts.RequestPermission()
     ) { isGranted ->
         if (isGranted) {
-            Log.e("SmsDebug", "yyaya")
             viewModel.processSmsExpenses()
         }
     }
@@ -80,9 +80,9 @@ fun HomeNavigator(viewModel: HomeViewModel) {
         bottomBar = {
             NavigationBar {
                 listOf(
-                    Triple(Icons.Default.Home, "Net Worth", 0),
-                    Triple(Icons.Default.Home, "Home", 1),
-                    Triple(Icons.Default.Home, "AI Chat", 2)
+                    Triple(Icons.Default.Home, "Mutual Funds", 0),
+                    Triple(Icons.Default.Home, "Expenses", 1),
+                    Triple(Icons.Default.Home, "AI Assistant", 2)
                 ).forEach { (icon, label, index) ->
                     NavigationBarItem(
                         icon = { Icon(icon, label) },
@@ -95,7 +95,8 @@ fun HomeNavigator(viewModel: HomeViewModel) {
         }
     ) { padding ->
         when (selectedTab) {
-            0 -> NetWorthScreen(padding)
+           // 0 -> NetWorthScreen(padding)
+            0 -> MutualFundScreen(padding)
             1 -> HomeScreen(padding, viewModel)
             2 -> ChatScreen(padding)
         }

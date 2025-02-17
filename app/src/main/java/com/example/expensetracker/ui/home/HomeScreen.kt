@@ -190,7 +190,7 @@ fun HomeScreen(
                 // Total display
                 Text(
                     text = when {
-                        selectedCategory != null -> "Total for $selectedCategory: ₹${selectedCategoryTotal?.toInt() ?: 0}"
+                        selectedCategory != null -> "$selectedCategory: ₹${selectedCategoryTotal?.toInt() ?: 0}"
                         else -> "₹${periodTotal.toInt()}"
                     },
                     style = MaterialTheme.typography.headlineLarge,

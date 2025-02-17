@@ -194,7 +194,7 @@ class HomeViewModel @Inject constructor(
             } catch (e: Exception) {
                 // Handle error
                 viewModelScope.launch {
-                    Toast.makeText(context, e.toString(), Toast.LENGTH_LONG).show()
+                    Toast.makeText(context, e.toString(), Toast.LENGTH_SHORT).show()
                     Log.e("asd",e.toString());
                 }
             }
