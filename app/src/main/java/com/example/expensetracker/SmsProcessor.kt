@@ -50,6 +50,7 @@ class SmsProcessor @Inject constructor(
             MerchantCategory("GROWW", CATEGORY_INVESTMENT),
             MerchantCategory("Groww Payments", CATEGORY_INVESTMENT),
             MerchantCategory("GROWW INVESTMENT", CATEGORY_INVESTMENT),
+            MerchantCategory("ICCL-Groww", CATEGORY_INVESTMENT),
             // Telecom
             MerchantCategory("JIO PLATFORMS L", CATEGORY_TELECOM),
             MerchantCategory("AIRTEL", CATEGORY_TELECOM),
@@ -70,7 +71,7 @@ class SmsProcessor @Inject constructor(
             ),
             CATEGORY_INVESTMENT to listOf(
                 "mutual fund", "stocks", "investment", "trading", "groww",
-                "angel", "zerodha", "nse", "bse", "securities", "broking"
+                "angel", "zerodha", "nse", "bse", "securities", "broking", "iccl"
             ),
             CATEGORY_TELECOM to listOf(
                 "platforms", "telecom", "jio", "airtel", "vi", "vodafone"
@@ -98,8 +99,7 @@ class SmsProcessor @Inject constructor(
 
         val smsUri = getAccessibleSmsUri(context) ?: return emptyList()
 
-        // Use query with DATE constraint to ensure we only process messages from 2025
-        // (maintaining your existing date filtering logic)
+        // Use query with DATE constraint to ensure we only process messages after last sync
         val cursor = context.contentResolver.query(
             smsUri,
             arrayOf("body", "date", "address"),
@@ -195,7 +195,7 @@ class SmsProcessor @Inject constructor(
         // ACCEPT: Strong positive indicators that this is an actual transaction
         // These are phrases that almost always indicate an actual expense that has occurred
         val strongTransactionIndicators = listOf(
-            "debited from", "spent using", "paid using", "withdrawn from",
+            "debited from", "debited by", "spent using", "paid using", "withdrawn from",
             "deducted from", "trf to", "transfer to", "txn"
         )
 
@@ -277,178 +277,94 @@ class SmsProcessor @Inject constructor(
             return null  // This is a bill reminder, not an expense
         }
 
-        // Step 1: Credit card transaction format
-        // This pattern specifically handles messages like "INR X spent using Y Bank Card"
-        val creditCardPattern = "(?i)INR\\s+(\\d{1,3}(?:,\\d{3})*(?:\\.\\d{1,2})?|\\d+(?:\\.\\d{1,2})?)\\s+spent\\s+using"
-        val creditCardMatcher = Pattern.compile(creditCardPattern).matcher(body)
-        if (creditCardMatcher.find()) {
-            val amountStr = creditCardMatcher.group(1)?.trim() ?: return null
-            val cleanAmount = amountStr.replace(",", "")
-            return try {
-                cleanAmount.toDouble()
-            } catch (e: NumberFormatException) {
-                null
-            }
-        }
-
-        // Step 2: Debited from account format
-        // This pattern handles messages like "Rs. X debited from Y Bank a/c"
-        val debitedPattern = "(?i)(Rs\\.?|INR|₹)\\s*(\\d{1,3}(?:,\\d{3})*(?:\\.\\d{1,2})?|\\d+(?:\\.\\d{1,2})?)\\s+debited\\s+from"
-        val debitedMatcher = Pattern.compile(debitedPattern).matcher(body)
-        if (debitedMatcher.find()) {
-            val amountStr = debitedMatcher.group(2)?.trim() ?: return null
-            val cleanAmount = amountStr.replace(",", "")
-            return try {
-                cleanAmount.toDouble()
-            } catch (e: NumberFormatException) {
-                null
-            }
-        }
-
-        // Step 3: Other specific transaction patterns
-        val spentPatterns = listOf(
-            // "Spent INR X" - amount directly after spent
-            "(?i)spent\\s+(?:using|via|with|through)?\\s*(?:INR|Rs\\.?|₹)?\\s*(\\d{1,3}(?:,\\d{3})*(?:\\.\\d{1,2})?|\\d+(?:\\.\\d{1,2})?)",
-
-            // "INR X spent" - amount directly before spent
-            "(?i)(INR|Rs\\.?|₹)\\s*(\\d{1,3}(?:,\\d{3})*(?:\\.\\d{1,2})?|\\d+(?:\\.\\d{1,2})?)\\s+(?:has been |was |is |were )?spent"
+        // Create a more universal approach - look for number patterns near transaction indicators
+        val transactionIndicators = listOf(
+            "debited", "spent", "paid", "withdrawn", "deducted", "transferred",
+            "transaction", "purchase", "payment"
         )
 
-        for (pattern in spentPatterns) {
-            val matcher = Pattern.compile(pattern).matcher(body)
-            if (matcher.find()) {
-                // Group index depends on the pattern
-                val groupIndex = if (pattern.contains("(INR|Rs\\.?|₹)\\s*(\\d")) 2 else 1
-                val amountStr = matcher.group(groupIndex)?.trim() ?: continue
-                val cleanAmount = amountStr.replace(",", "")
-                return try {
-                    cleanAmount.toDouble()
-                } catch (e: NumberFormatException) {
-                    null
-                }
-            }
+        // First check if any transaction indicators exist in the message
+        val hasTransactionIndicator = transactionIndicators.any { indicator ->
+            lowerBody.contains(indicator)
         }
 
-        // Handle debited patterns
-        val debitedPatterns = listOf(
-            // "debited X" - amount after debited
-            "(?i)debited\\s+(?:by|of|for)?\\s*(?:INR|Rs\\.?|₹)?\\s*(\\d{1,3}(?:,\\d{3})*(?:\\.\\d{1,2})?|\\d+(?:\\.\\d{1,2})?)",
+        if (hasTransactionIndicator) {
+            // Find all currency-amount patterns in the message
+            val amountPatterns = listOf(
+                // Case 1: Currency symbol followed by amount (INR 100.00)
+                "(?i)(rs\\.?|inr|₹)\\s*(\\d{1,3}(?:,\\d{3})*(?:\\.\\d{1,2})?|\\d+(?:\\.\\d{1,2})?)",
 
-            // "INR X debited" - amount before debited
-            "(?i)(INR|Rs\\.?|₹)\\s*(\\d{1,3}(?:,\\d{3})*(?:\\.\\d{1,2})?|\\d+(?:\\.\\d{1,2})?)\\s+(?:has been |was |is |were )?debited"
-        )
+                // Case 2: Amount followed by currency symbol (100.00 INR)
+                "(?i)(\\d{1,3}(?:,\\d{3})*(?:\\.\\d{1,2})?|\\d+(?:\\.\\d{1,2})?)\\s*(?:rs\\.?|inr|₹)",
 
-        for (pattern in debitedPatterns) {
-            val matcher = Pattern.compile(pattern).matcher(body)
-            if (matcher.find()) {
-                // Group index depends on the pattern
-                val groupIndex = if (pattern.contains("(INR|Rs\\.?|₹)\\s*(\\d")) 2 else 1
-                val amountStr = matcher.group(groupIndex)?.trim() ?: continue
-                val cleanAmount = amountStr.replace(",", "")
-                return try {
-                    cleanAmount.toDouble()
-                } catch (e: NumberFormatException) {
-                    null
+                // Case 3: Just an amount with decimal point near transaction indicator (100.00)
+                "(?i)(\\d{1,3}(?:,\\d{3})*\\.\\d{1,2}|\\d+\\.\\d{1,2})"
+            )
+
+            // Store all found amounts with their positions in text
+            val foundAmounts = mutableListOf<Pair<Double, Int>>()
+
+            // Find all amounts in the text
+            for (pattern in amountPatterns) {
+                val matcher = Pattern.compile(pattern).matcher(body)
+                while (matcher.find()) {
+                    try {
+                        // Extract amount group (group 2 for Case 1, group 1 for others)
+                        val amountGroup = if (pattern.startsWith("(?i)(rs")) 2 else 1
+                        val amountStr = matcher.group(amountGroup)?.trim() ?: continue
+                        val cleanAmount = amountStr.replace(",", "")
+                        val amount = cleanAmount.toDouble()
+
+                        // Skip if this seems to be an available balance or limit
+                        val nearbyText = try {
+                            val start = Math.max(0, matcher.start() - 20)
+                            val end = Math.min(body.length, matcher.end() + 20)
+                            body.substring(start, end).lowercase()
+                        } catch (e: Exception) {
+                            ""
+                        }
+
+                        if (nearbyText.contains("avl") || nearbyText.contains("available") ||
+                            nearbyText.contains("limit") || nearbyText.contains("balance") ||
+                            nearbyText.contains("bal:")) {
+                            continue
+                        }
+
+                        foundAmounts.add(Pair(amount, matcher.start()))
+                    } catch (e: NumberFormatException) {
+                        continue
+                    }
                 }
             }
-        }
 
-        // Handle paid patterns
-        val paidPatterns = listOf(
-            // "paid X" - amount after paid
-            "(?i)paid\\s+(?:by|of|for)?\\s*(?:INR|Rs\\.?|₹)?\\s*(\\d{1,3}(?:,\\d{3})*(?:\\.\\d{1,2})?|\\d+(?:\\.\\d{1,2})?)",
-
-            // "INR X paid" - amount before paid
-            "(?i)(INR|Rs\\.?|₹)\\s*(\\d{1,3}(?:,\\d{3})*(?:\\.\\d{1,2})?|\\d+(?:\\.\\d{1,2})?)\\s+(?:has been |was |is |were )?paid"
-        )
-
-        for (pattern in paidPatterns) {
-            val matcher = Pattern.compile(pattern).matcher(body)
-            if (matcher.find()) {
-                // Group index depends on the pattern
-                val groupIndex = if (pattern.contains("(INR|Rs\\.?|₹)\\s*(\\d")) 2 else 1
-                val amountStr = matcher.group(groupIndex)?.trim() ?: continue
-                val cleanAmount = amountStr.replace(",", "")
-                return try {
-                    cleanAmount.toDouble()
-                } catch (e: NumberFormatException) {
-                    null
-                }
-            }
-        }
-
-        // Step 4: As a fallback, try for any currency amount but ONLY in transaction contexts
-        if (lowerBody.contains("debited") || lowerBody.contains("spent") ||
-            lowerBody.contains("paid") || lowerBody.contains("deducted") ||
-            (lowerBody.contains("txn") && !lowerBody.contains("amount payable"))) {
-
-            val generalPattern = "(?i)(Rs\\.?|INR|₹)\\s*(\\d{1,3}(?:,\\d{3})*(?:\\.\\d{1,2})?|\\d+(?:\\.\\d{1,2})?)"
-            val generalMatcher = Pattern.compile(generalPattern).matcher(body)
-
-            // Keep track of all amounts found
-            val amounts = mutableListOf<Pair<String, Int>>()  // amount and position
-
-            while (generalMatcher.find()) {
-                val amountStr = generalMatcher.group(2)?.trim() ?: continue
-
-                // Check if this seems to be an available balance or limit
-                val nearbyText = try {
-                    val start = Math.max(0, generalMatcher.start() - 20)
-                    val end = Math.min(body.length, generalMatcher.end() + 20)
-                    body.substring(start, end).lowercase()
-                } catch (e: Exception) {
-                    ""
-                }
-
-                // Skip if this looks like an available balance
-                if (nearbyText.contains("avl") || nearbyText.contains("available") ||
-                    nearbyText.contains("limit") || nearbyText.contains("balance") ||
-                    nearbyText.contains("bal:")) {
-                    continue
-                }
-
-                amounts.add(Pair(amountStr, generalMatcher.start()))
-            }
-
-            // If we found any amounts, use the first one (closest to transaction indicator)
-            if (amounts.isNotEmpty()) {
-                // Find transactions indicators in the text
-                val transactionIndicators = listOf("debited", "spent", "paid", "deducted", "txn")
+            // If we found amounts, find the one closest to a transaction indicator
+            if (foundAmounts.isNotEmpty()) {
                 val indicatorPositions = mutableListOf<Int>()
 
+                // Find all positions of transaction indicators
                 for (indicator in transactionIndicators) {
-                    val index = lowerBody.indexOf(indicator)
-                    if (index >= 0) {
+                    var index = lowerBody.indexOf(indicator)
+                    while (index >= 0) {
                         indicatorPositions.add(index)
+                        index = lowerBody.indexOf(indicator, index + 1)
                     }
                 }
 
-                // If we found any indicators, use the amount closest to an indicator
+                // If we found transaction indicators, find the amount closest to any indicator
                 if (indicatorPositions.isNotEmpty()) {
-                    val bestAmount = amounts.minByOrNull { amount ->
+                    return foundAmounts.minByOrNull { amountPair ->
                         indicatorPositions.minOf { position ->
-                            Math.abs(amount.second - position)
+                            Math.abs(amountPair.second - position)
                         }
-                    }?.first ?: amounts.first().first
-
-                    val cleanAmount = bestAmount.replace(",", "")
-                    return try {
-                        cleanAmount.toDouble()
-                    } catch (e: NumberFormatException) {
-                        null
-                    }
+                    }?.first
                 } else {
-                    // Otherwise use the first amount
-                    val cleanAmount = amounts.first().first.replace(",", "")
-                    return try {
-                        cleanAmount.toDouble()
-                    } catch (e: NumberFormatException) {
-                        null
-                    }
+                    // Otherwise just return the first amount
+                    return foundAmounts.first().first
                 }
             }
         }
 
+        // If we've reached here, we couldn't find a valid amount
         return null
     }
 
@@ -473,12 +389,21 @@ class SmsProcessor @Inject constructor(
             }
         }
 
-        // 2. Try direct merchant indicators with strong contextual markers
+        // 2. Try "trf to MERCHANT" pattern (common in UPI and bank transfers)
+        val trfPattern = "(?i)trf\\s+to\\s+([^.\\s]+(?:\\s+[^.\\s]+)*)"
+        val trfMatcher = Pattern.compile(trfPattern).matcher(body)
+        if (trfMatcher.find()) {
+            val merchant = trfMatcher.group(1)?.trim()
+            if (merchant != null && merchant.length > 2 && !isGenericTerm(merchant)) {
+                return cleanMerchantName(merchant)
+            }
+        }
+
+        // 3. Try direct merchant indicators with strong contextual markers
         val directPatterns = listOf(
             "(?i)paid\\s+to\\s+([^.\\s]+(?:\\s+[^.\\s]+)*)",                  // paid to MERCHANT
             "(?i)payment\\s+to\\s+([^.\\s]+(?:\\s+[^.\\s]+)*)",               // payment to MERCHANT
             "(?i)transferred\\s+to\\s+([^.\\s]+(?:\\s+[^.\\s]+)*)",           // transferred to MERCHANT
-            "(?i)trf\\s+to\\s+([^.\\s]+(?:\\s+[^.\\s]+)*)",                   // trf to MERCHANT
             "(?i)purchase\\s+(?:at|from)\\s+([^.\\s]+(?:\\s+[^.\\s]+)*)",     // purchase at MERCHANT
             "(?i)buying\\s+from\\s+([^.\\s]+(?:\\s+[^.\\s]+)*)",              // buying from MERCHANT
             "(?i)transaction\\s+at\\s+([^.\\s]+(?:\\s+[^.\\s]+)*)"            // transaction at MERCHANT
@@ -494,14 +419,14 @@ class SmsProcessor @Inject constructor(
             }
         }
 
-        // 3. Look for known merchants from our catalog
+        // 4. Look for known merchants from our catalog
         for (merchantCategory in merchantCategories) {
             if (body.contains(merchantCategory.merchantName, ignoreCase = true)) {
                 return merchantCategory.merchantName
             }
         }
 
-        // 4. Look for ALL CAPS words that are likely merchants
+        // 5. Look for ALL CAPS words that are likely merchants
         val capsPattern = "\\b([A-Z]{2,}(?:\\s+[A-Z]+)*)\\b"
         val capsMatcher = Pattern.compile(capsPattern).matcher(body)
 
@@ -512,7 +437,8 @@ class SmsProcessor @Inject constructor(
             // Skip excluded terms and ensure it's not too short or too long
             val excluded = listOf(
                 "INR", "SMS", "RS", "ID", "BLOCK", "CALL", "ALERT", "INFO",
-                "BALANCE", "LIMIT", "AVL", "TXN", "FOR", "ANY", "DISCREPANCY", "DIAL"
+                "BALANCE", "LIMIT", "AVL", "TXN", "FOR", "ANY", "DISCREPANCY", "DIAL",
+                "A/C", "ACCOUNT", "DATE", "REF", "DEAR", "USER", "CUSTOMER", "REFNO"
             ) + bankIdentifiers
 
             if (match != null && !excluded.contains(match) && match.length > 2 && match.length < 25) {
@@ -525,7 +451,7 @@ class SmsProcessor @Inject constructor(
             return allCapsMatches.maxByOrNull { it.length } ?: "Unknown"
         }
 
-        // 5. For specific banks/payment services, use them as merchant when no other merchant is found
+        // 6. For specific banks/payment services, use them as merchant when no other merchant is found
         val bankPattern = "(?i)(Airtel\\s+Payments\\s+Bank|ICICI\\s+Bank|SBI|HDFC\\s+Bank|Axis\\s+Bank|Kotak|Yes\\s+Bank|UPI|IMPS)"
         val bankMatcher = Pattern.compile(bankPattern).matcher(body)
         if (bankMatcher.find()) {
@@ -618,6 +544,7 @@ class SmsProcessor @Inject constructor(
         // Remove "Ref" or "Reference" if it appears at the end
         cleaned = cleaned.replace(Regex("(?i)\\s+Ref\\s*$"), "")
             .replace(Regex("(?i)\\s+Reference\\s*$"), "")
+            .replace(Regex("(?i)\\s+Refno\\s*.*$"), "")
             .trim()
 
         // Remove non-merchant terms
@@ -643,6 +570,7 @@ class SmsProcessor @Inject constructor(
             "(?i)Transaction\\s*No\\s*([A-Za-z0-9]+)",          // Transaction No 12345
             "(?i)Ref\\s*No\\s*([A-Za-z0-9]+)",                  // Ref No 12345
             "(?i)Reference\\s*No\\s*([A-Za-z0-9]+)",            // Reference No 12345
+            "(?i)Refno\\s*(\\d+)",                              // Refno 12345
             "(?i)Card\\s*XX(\\d{4})",                           // Card XX1234
             "(?i)IMPS/P2A/(\\w+)",                              // IMPS/P2A/ABCDEF
             "(?i)UPI\\s*Ref\\s*([A-Za-z0-9]+)"                  // UPI Ref 12345
@@ -658,6 +586,9 @@ class SmsProcessor @Inject constructor(
         return null
     }
 
+    /**
+     * Determine the expense category based on merchant name and message content.
+     */
     private fun detectCategory(merchantName: String, smsBody: String): String {
         // First try exact merchant match
         merchantCategories.find { it.merchantName == merchantName }?.let {
@@ -682,6 +613,9 @@ class SmsProcessor @Inject constructor(
         return CATEGORY_MISC
     }
 
+    /**
+     * Get a valid SMS URI from the content provider.
+     */
     private fun getAccessibleSmsUri(context: Context): Uri? {
         return try {
             val uri = Uri.parse("content://sms/inbox")
